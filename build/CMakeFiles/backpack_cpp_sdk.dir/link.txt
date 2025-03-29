@@ -1,0 +1,2 @@
+/Library/Developer/CommandLineTools/usr/bin/ar qc libbackpack_cpp_sdk.a CMakeFiles/backpack_cpp_sdk.dir/src/websocket_client.cpp.o CMakeFiles/backpack_cpp_sdk.dir/src/backpack_client.cpp.o CMakeFiles/backpack_cpp_sdk.dir/src/utils.cpp.o
+/Library/Developer/CommandLineTools/usr/bin/ranlib libbackpack_cpp_sdk.a
