@@ -1,3 +1,0 @@
-/Users/penrose/backpack-cpp-sdk/build/_deps/websocketpp-subbuild/CMakeFiles/websocketpp-populate.dir
-/Users/penrose/backpack-cpp-sdk/build/_deps/websocketpp-subbuild/CMakeFiles/edit_cache.dir
-/Users/penrose/backpack-cpp-sdk/build/_deps/websocketpp-subbuild/CMakeFiles/rebuild_cache.dir

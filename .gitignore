@@ -1,0 +1,68 @@
+# Build directories
+build/
+out/
+cmake-build-*/
+
+# CMake temporary files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# Compiled binaries and libraries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+
+# Generated files
+*_generated.h
+*_generated.cpp
+*autogen*
+
+# Dependency directories
+/vcpkg/
+/vcpkg_installed/
+/deps/
+/third_party/*
+!/third_party/CMakeLists.txt
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+*.code-workspace
+.vs/
+*.user
+*.suo
+*.sln.docstates
+
+# Debugging files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+gmon.out
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Project specific
+websocket_example
+trading_example
+
+# Log files
+*.log 

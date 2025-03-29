@@ -1,8 +1,0 @@
-/Users/penrose/backpack-cpp-sdk/build/CMakeFiles/backpack_cpp_sdk.dir
-/Users/penrose/backpack-cpp-sdk/build/CMakeFiles/websocket_example.dir
-/Users/penrose/backpack-cpp-sdk/build/CMakeFiles/edit_cache.dir
-/Users/penrose/backpack-cpp-sdk/build/CMakeFiles/rebuild_cache.dir
-/Users/penrose/backpack-cpp-sdk/build/CMakeFiles/list_install_components.dir
-/Users/penrose/backpack-cpp-sdk/build/CMakeFiles/install.dir
-/Users/penrose/backpack-cpp-sdk/build/CMakeFiles/install/local.dir
-/Users/penrose/backpack-cpp-sdk/build/CMakeFiles/install/strip.dir
