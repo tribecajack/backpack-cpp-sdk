@@ -40,7 +40,7 @@ Make sure you have the following installed:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/backpack-cpp-sdk.git
+git clone https://github.com/tribecajack/backpack-cpp-sdk.git
 cd backpack-cpp-sdk
 
 # Create a build directory
@@ -200,7 +200,6 @@ client.subscribe_user_balances([](const backpack::Balance& balance) {
 See the `examples` directory for complete working examples:
 
 - `websocket_example.cpp`: Demonstrates WebSocket subscriptions for market data
-- `trading_example.cpp`: Demonstrates both WebSocket and REST API functionality with a simple market making strategy
 
 ## API Documentation
 
