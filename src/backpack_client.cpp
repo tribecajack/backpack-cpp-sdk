@@ -1,11 +1,16 @@
 #include "backpack/backpack_client.hpp"
 #include <iostream>
+#include <nlohmann/json.hpp>
 
 namespace backpack {
 
+using json = nlohmann::json;
+
 BackpackClient::BackpackClient(const std::string& websocket_url, const std::string& rest_url)
-    : ws_client_(std::make_unique<BackpackWebSocketClient>(websocket_url)),
-      rest_client_(std::make_unique<RestClient>(rest_url)) {
+    : websocket_url_(websocket_url)
+    , rest_url_(rest_url)
+    , ws_client_(std::make_unique<WebSocketClient>())
+    , rest_client_(std::make_unique<RestClient>(rest_url)) {
 }
 
 BackpackClient::~BackpackClient() {
@@ -13,83 +18,178 @@ BackpackClient::~BackpackClient() {
 }
 
 void BackpackClient::set_credentials(const std::string& api_key, const std::string& api_secret) {
-    ws_client_->set_credentials(api_key, api_secret);
+    api_key_ = api_key;
+    api_secret_ = api_secret;
     rest_client_->set_credentials(api_key, api_secret);
 }
 
 bool BackpackClient::connect() {
-    return ws_client_->connect();
+    if (connected_) {
+        return true;
+    }
+
+    // Set up WebSocket handlers
+    ws_client_->set_open_handler([this]() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        connected_ = true;
+    });
+
+    ws_client_->set_close_handler([this]() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        connected_ = false;
+        authenticated_ = false;
+    });
+
+    ws_client_->set_message_handler([this](const std::string& message) {
+        try {
+            json j = json::parse(message);
+            if (j.contains("type")) {
+                std::string type = j["type"];
+                if (type == "error") {
+                    std::cerr << "WebSocket error: " << j["message"].get<std::string>() << std::endl;
+                    return;
+                }
+                
+                if (type == "authenticated") {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    authenticated_ = true;
+                    return;
+                }
+                
+                if (type == "subscribed" || type == "unsubscribed") {
+                    return;
+                }
+                
+                if (j.contains("data")) {
+                    std::string channel = j["channel"].get<std::string>();
+                    std::string symbol = j.value("symbol", "");
+                    std::string key = channel + ":" + symbol;
+                    
+                    auto it = message_handlers_.find(key);
+                    if (it != message_handlers_.end()) {
+                        it->second(j["data"]);
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error processing message: " << e.what() << std::endl;
+        }
+    });
+
+    // Connect to WebSocket server
+    return ws_client_->connect(websocket_url_);
 }
 
 void BackpackClient::disconnect() {
-    ws_client_->disconnect();
+    if (!connected_) {
+        return;
+    }
+    
+    std::lock_guard<std::mutex> lock(mutex_);
+    connected_ = false;
+    authenticated_ = false;
+    message_handlers_.clear();
 }
 
 bool BackpackClient::is_connected() const {
-    return ws_client_->is_connected();
+    return connected_;
 }
 
 bool BackpackClient::authenticate() {
-    return ws_client_->authenticate();
-}
-
-bool BackpackClient::subscribe_ticker(const std::string& symbol, std::function<void(const Ticker&)> callback) {
-    return subscribe_to_channel<Ticker>(Channel::TICKER, symbol, callback);
-}
-
-bool BackpackClient::subscribe_trades(const std::string& symbol, std::function<void(const Trade&)> callback) {
-    return subscribe_to_channel<Trade>(Channel::TRADES, symbol, callback);
-}
-
-bool BackpackClient::subscribe_candles(const std::string& symbol, Channel interval, std::function<void(const Candle&)> callback) {
-    // Validate that the interval is a candle channel
-    if (interval != Channel::CANDLES_1M && 
-        interval != Channel::CANDLES_5M && 
-        interval != Channel::CANDLES_15M && 
-        interval != Channel::CANDLES_1H && 
-        interval != Channel::CANDLES_4H && 
-        interval != Channel::CANDLES_1D) {
-        std::cerr << "Invalid candle interval channel" << std::endl;
+    if (!connected_ || authenticated_ || api_key_.empty() || api_secret_.empty()) {
         return false;
     }
     
-    return subscribe_to_channel<Candle>(interval, symbol, callback);
+    try {
+        json auth = {
+            {"type", "auth"},
+            {"key", api_key_},
+            {"secret", api_secret_}
+        };
+        
+        ws_client_->send(auth.dump());
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Authentication error: " << e.what() << std::endl;
+        return false;
+    }
 }
 
-bool BackpackClient::subscribe_depth(const std::string& symbol, std::function<void(const OrderBook&)> callback) {
-    return subscribe_to_channel<OrderBook>(Channel::DEPTH, symbol, callback);
-}
-
-bool BackpackClient::subscribe_depth_snapshot(const std::string& symbol, std::function<void(const OrderBook&)> callback) {
-    return subscribe_to_channel<OrderBook>(Channel::DEPTH_SNAPSHOT, symbol, callback);
-}
-
-bool BackpackClient::subscribe_user_orders(std::function<void(const Order&)> callback) {
-    return subscribe_to_channel<Order>(Channel::USER_ORDERS, "", callback);
-}
-
-bool BackpackClient::subscribe_user_trades(std::function<void(const Trade&)> callback) {
-    return subscribe_to_channel<Trade>(Channel::USER_TRADES, "", callback);
-}
-
-bool BackpackClient::subscribe_user_positions(std::function<void(const Position&)> callback) {
-    return subscribe_to_channel<Position>(Channel::USER_POSITIONS, "", callback);
-}
-
-bool BackpackClient::subscribe_user_balances(std::function<void(const Balance&)> callback) {
-    return subscribe_to_channel<Balance>(Channel::USER_BALANCES, "", callback);
+template<typename T>
+bool BackpackClient::subscribe_to_channel(Channel channel, const std::string& symbol, std::function<void(const T&)> callback) {
+    if (!connected_) {
+        return false;
+    }
+    
+    try {
+        std::string channel_str = channel_to_string(channel);
+        std::string key = channel_str + ":" + symbol;
+        
+        // Store message handler
+        message_handlers_[key] = [callback](const json& data) {
+            try {
+                T obj = T::from_json(data);
+                callback(obj);
+            } catch (const std::exception& e) {
+                std::cerr << "Error parsing message: " << e.what() << std::endl;
+            }
+        };
+        
+        // Send subscription request
+        json sub = {
+            {"type", "subscribe"},
+            {"channel", channel_str}
+        };
+        
+        if (!symbol.empty()) {
+            sub["symbol"] = symbol;
+        }
+        
+        ws_client_->send(sub.dump());
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Subscription error: " << e.what() << std::endl;
+        return false;
+    }
 }
 
 bool BackpackClient::unsubscribe(Channel channel, const std::string& symbol) {
-    return ws_client_->unsubscribe(channel, symbol);
+    if (!connected_) {
+        return false;
+    }
+    
+    try {
+        std::string channel_str = channel_to_string(channel);
+        std::string key = channel_str + ":" + symbol;
+        
+        // Remove message handler
+        message_handlers_.erase(key);
+        
+        // Send unsubscription request
+        json unsub = {
+            {"type", "unsubscribe"},
+            {"channel", channel_str}
+        };
+        
+        if (!symbol.empty()) {
+            unsub["symbol"] = symbol;
+        }
+        
+        ws_client_->send(unsub.dump());
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Unsubscription error: " << e.what() << std::endl;
+        return false;
+    }
 }
 
 void BackpackClient::ping() {
-    ws_client_->ping();
+    if (connected_) {
+        ws_client_->send(R"({"type":"ping"})");
+    }
 }
 
-// REST API methods
-
+// REST API method implementations remain unchanged
 int64_t BackpackClient::get_server_time() {
     return rest_client_->get_server_time();
 }
@@ -155,9 +255,8 @@ std::vector<Order> BackpackClient::get_open_orders(const std::string& symbol) {
     return rest_client_->get_open_orders(symbol);
 }
 
-std::vector<Order> BackpackClient::get_all_orders(const std::string& symbol, int limit, 
-                                                 int64_t start_time, int64_t end_time) {
-    return rest_client_->get_all_orders(symbol, limit, start_time, end_time);
+std::vector<Order> BackpackClient::get_all_orders(const std::string& symbol, int limit, const std::string& from_id) {
+    return rest_client_->get_all_orders(symbol, limit, from_id);
 }
 
 Account BackpackClient::get_account() {
@@ -168,9 +267,8 @@ std::vector<Balance> BackpackClient::get_balances() {
     return rest_client_->get_balances();
 }
 
-std::vector<Trade> BackpackClient::get_account_trades(const std::string& symbol, int limit,
-                                                     int64_t start_time, int64_t end_time) {
-    return rest_client_->get_account_trades(symbol, limit, start_time, end_time);
+std::vector<Trade> BackpackClient::get_account_trades(const std::string& symbol, int limit, const std::string& from_id) {
+    return rest_client_->get_account_trades(symbol, limit, from_id);
 }
 
 } // namespace backpack

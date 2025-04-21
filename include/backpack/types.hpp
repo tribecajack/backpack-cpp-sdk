@@ -138,11 +138,11 @@ struct UnsubscriptionRequest {
 
 // API credentials
 struct Credentials {
-    std::string api_key;
-    std::string api_secret;
+    std::string api_key; // Public key
+    std::string base64_private_key; // Base64 encoded private key
 
     bool is_valid() const {
-        return !api_key.empty() && !api_secret.empty();
+        return !api_key.empty() && !base64_private_key.empty();
     }
 };
 
