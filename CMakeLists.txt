@@ -71,9 +71,6 @@ target_link_libraries(backpack_cpp_sdk
 add_executable(websocket_example examples/websocket_example.cpp)
 target_link_libraries(websocket_example PRIVATE backpack_cpp_sdk)
 
-add_executable(trading_example examples/trading_example.cpp)
-target_link_libraries(trading_example PRIVATE backpack_cpp_sdk)
-
 # Installation
 include(GNUInstallDirs)
 install(TARGETS backpack_cpp_sdk

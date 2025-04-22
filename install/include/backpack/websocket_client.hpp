@@ -152,7 +152,6 @@ private:
     bool send_message(const std::string& message);
     std::string get_callback_key(Channel channel, const std::string& symbol);
     void handle_message(const json& message);
-    std::string generate_signature(const std::string& message, const std::string& secret);
 };
 
 } // namespace backpack

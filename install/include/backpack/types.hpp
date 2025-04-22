@@ -28,10 +28,7 @@ enum class Channel {
     USER_ORDERS,
     USER_TRADES,
     USER_POSITIONS,
-    USER_BALANCES,
-    ORDERS,
-    POSITIONS,
-    BALANCES
+    USER_BALANCES
 };
 
 // Convert Channel to string
@@ -39,22 +36,19 @@ inline std::string channel_to_string(Channel channel) {
     switch (channel) {
         case Channel::TICKER: return "ticker";
         case Channel::TRADES: return "trades";
-        case Channel::CANDLES_1M: return "candle.1m";
-        case Channel::CANDLES_5M: return "candle.5m";
-        case Channel::CANDLES_15M: return "candle.15m";
-        case Channel::CANDLES_1H: return "candle.1h";
-        case Channel::CANDLES_4H: return "candle.4h";
-        case Channel::CANDLES_1D: return "candle.1d";
+        case Channel::CANDLES_1M: return "candles1m";
+        case Channel::CANDLES_5M: return "candles5m";
+        case Channel::CANDLES_15M: return "candles15m";
+        case Channel::CANDLES_1H: return "candles1h";
+        case Channel::CANDLES_4H: return "candles4h";
+        case Channel::CANDLES_1D: return "candles1d";
         case Channel::DEPTH: return "depth";
-        case Channel::DEPTH_SNAPSHOT: return "depth";  // Using depth for both since snapshot is initial state
-        case Channel::USER_ORDERS: return "orders";
-        case Channel::USER_TRADES: return "user.trades";
-        case Channel::USER_POSITIONS: return "positions";
-        case Channel::USER_BALANCES: return "balances";
-        case Channel::ORDERS: return "orders";
-        case Channel::POSITIONS: return "positions";
-        case Channel::BALANCES: return "balances";
-        default: throw std::runtime_error("Unknown channel type");
+        case Channel::DEPTH_SNAPSHOT: return "depthSnapshot";
+        case Channel::USER_ORDERS: return "userOrders";
+        case Channel::USER_TRADES: return "userTrades";
+        case Channel::USER_POSITIONS: return "userPositions";
+        case Channel::USER_BALANCES: return "userBalances";
+        default: return "unknown";
     }
 }
 
@@ -62,17 +56,18 @@ inline std::string channel_to_string(Channel channel) {
 inline std::optional<Channel> string_to_channel(const std::string& str) {
     if (str == "ticker") return Channel::TICKER;
     if (str == "trades") return Channel::TRADES;
-    if (str == "candle.1m") return Channel::CANDLES_1M;
-    if (str == "candle.5m") return Channel::CANDLES_5M;
-    if (str == "candle.15m") return Channel::CANDLES_15M;
-    if (str == "candle.1h") return Channel::CANDLES_1H;
-    if (str == "candle.4h") return Channel::CANDLES_4H;
-    if (str == "candle.1d") return Channel::CANDLES_1D;
+    if (str == "candles1m") return Channel::CANDLES_1M;
+    if (str == "candles5m") return Channel::CANDLES_5M;
+    if (str == "candles15m") return Channel::CANDLES_15M;
+    if (str == "candles1h") return Channel::CANDLES_1H;
+    if (str == "candles4h") return Channel::CANDLES_4H;
+    if (str == "candles1d") return Channel::CANDLES_1D;
     if (str == "depth") return Channel::DEPTH;
-    if (str == "orders") return Channel::USER_ORDERS;
-    if (str == "trades") return Channel::USER_TRADES;
-    if (str == "positions") return Channel::USER_POSITIONS;
-    if (str == "balances") return Channel::USER_BALANCES;
+    if (str == "depthSnapshot") return Channel::DEPTH_SNAPSHOT;
+    if (str == "userOrders") return Channel::USER_ORDERS;
+    if (str == "userTrades") return Channel::USER_TRADES;
+    if (str == "userPositions") return Channel::USER_POSITIONS;
+    if (str == "userBalances") return Channel::USER_BALANCES;
     return std::nullopt;
 }
 
@@ -117,23 +112,11 @@ struct SubscriptionRequest {
     bool auth_required = false;
 
     json to_json() const {
-        // Convert symbol format from SOL-USDC to SOL_USDC
-        std::string formatted_symbol = symbol;
-        if (!symbol.empty()) {
-            std::replace(formatted_symbol.begin(), formatted_symbol.end(), '-', '_');
-        }
-
-        // Create the stream name
-        std::string stream = channel_to_string(channel);
-        if (!formatted_symbol.empty()) {
-            stream += "." + formatted_symbol;
-        }
-
         json j = {
-            {"method", "SUBSCRIBE"},
-            {"params", json::array({stream})}
+            {"type", "subscribe"},
+            {"channel", channel_to_string(channel)},
+            {"symbol", symbol}
         };
-
         return j;
     }
 };
@@ -144,23 +127,11 @@ struct UnsubscriptionRequest {
     std::string symbol;
 
     json to_json() const {
-        // Convert symbol format from SOL-USDC to SOL_USDC
-        std::string formatted_symbol = symbol;
-        if (!symbol.empty()) {
-            std::replace(formatted_symbol.begin(), formatted_symbol.end(), '-', '_');
-        }
-
-        // Create the stream name
-        std::string stream = channel_to_string(channel);
-        if (!formatted_symbol.empty()) {
-            stream += "." + formatted_symbol;
-        }
-
         json j = {
-            {"method", "UNSUBSCRIBE"},
-            {"params", json::array({stream})}
+            {"type", "unsubscribe"},
+            {"channel", channel_to_string(channel)},
+            {"symbol", symbol}
         };
-
         return j;
     }
 };

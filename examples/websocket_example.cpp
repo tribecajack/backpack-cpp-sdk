@@ -22,8 +22,8 @@ int main(int argc, char* argv[]) {
     std::signal(SIGTERM, signal_handler);
     
     try {
-        // Create Backpack client
-        backpack::BackpackClient client;
+        // Create WebSocket client
+        backpack::BackpackWebSocketClient client("wss://ws.backpack.exchange");
         
         // Connect to WebSocket server
         std::cout << "Connecting to Backpack Exchange WebSocket server..." << std::endl;
@@ -33,92 +33,151 @@ int main(int argc, char* argv[]) {
         }
         std::cout << "Connected successfully" << std::endl;
         
-        // Set API credentials (optional, only needed for authenticated channels)
-        // client.set_credentials("your-api-key", "your-api-secret");
+        // Get API credentials from environment variables
+        const char* api_key = std::getenv("BACKPACK_API_KEY");
+        const char* api_secret = std::getenv("BACKPACK_API_SECRET");
+        bool authenticated = false;
         
-        // Subscribe to ticker data for SOL-USDC
-        client.subscribe_ticker("SOL-USDC", [](const backpack::Ticker& ticker) {
-            std::cout << "Ticker [" << ticker.symbol << "] "
-                      << "Last price: " << ticker.last_price << ", "
-                      << "Best bid: " << ticker.best_bid << ", "
-                      << "Best ask: " << ticker.best_ask << ", "
-                      << "24h change: " << ticker.price_change_24h << "%, "
-                      << "24h volume: " << ticker.volume_24h
-                      << std::endl;
-        });
+        if (api_key && api_secret) {
+            std::cout << "Setting API credentials..." << std::endl;
+            client.set_credentials(api_key, api_secret);
+            authenticated = true;
+        } else {
+            std::cout << "No API credentials found in environment variables" << std::endl;
+            std::cout << "Set BACKPACK_API_KEY and BACKPACK_API_SECRET to use authenticated endpoints" << std::endl;
+            std::cout << "Continuing with public channels only..." << std::endl;
+        }
         
-        // Subscribe to trades for SOL-USDC
-        client.subscribe_trades("SOL-USDC", [](const backpack::Trade& trade) {
-            std::cout << "Trade [" << trade.symbol << "] "
-                      << "ID: " << trade.id << ", "
-                      << "Price: " << trade.price << ", "
-                      << "Quantity: " << trade.quantity << ", "
-                      << "Buyer maker: " << (trade.is_buyer_maker ? "Yes" : "No") << ", "
-                      << "Timestamp: " << trade.timestamp
-                      << std::endl;
-        });
+        // Subscribe to multiple channels for SOL-USDC
+        const std::string symbol = "SOL-USDC";
+        bool subscribed = true;
         
-        // Subscribe to 1m candles for SOL-USDC
-        client.subscribe_candles("SOL-USDC", backpack::Channel::CANDLES_1M, [](const backpack::Candle& candle) {
-            std::cout << "Candle [" << candle.symbol << "] "
-                      << "Time: " << candle.timestamp << ", "
-                      << "Open: " << candle.open << ", "
-                      << "High: " << candle.high << ", "
-                      << "Low: " << candle.low << ", "
-                      << "Close: " << candle.close << ", "
-                      << "Volume: " << candle.volume
-                      << std::endl;
-        });
+        // Subscribe to public channels
+        std::cout << "Subscribing to public channels..." << std::endl;
         
-        // Subscribe to depth snapshot for SOL-USDC (full order book)
-        client.subscribe_depth_snapshot("SOL-USDC", [](const backpack::OrderBook& book) {
-            std::cout << "Order Book [" << book.symbol << "]" << std::endl;
+        // Subscribe to ticker
+        subscribed &= client.subscribe(backpack::Channel::TICKER, symbol);
+        
+        // Subscribe to trades
+        subscribed &= client.subscribe(backpack::Channel::TRADES, symbol);
+        
+        // Subscribe to different timeframe candles
+        subscribed &= client.subscribe(backpack::Channel::CANDLES_1M, symbol);
+        subscribed &= client.subscribe(backpack::Channel::CANDLES_5M, symbol);
+        subscribed &= client.subscribe(backpack::Channel::CANDLES_15M, symbol);
+        
+        // Subscribe to order book updates
+        subscribed &= client.subscribe(backpack::Channel::DEPTH, symbol);
+        
+        // Subscribe to authenticated channels if credentials are available
+        if (authenticated) {
+            std::cout << "Subscribing to authenticated channels..." << std::endl;
             
-            std::cout << "Bids:" << std::endl;
-            for (size_t i = 0; i < std::min<size_t>(5, book.bids.size()); ++i) {
-                std::cout << "  " << std::fixed << std::setprecision(8) 
-                          << book.bids[i].price << " : " 
-                          << book.bids[i].quantity << std::endl;
+            // Subscribe to user orders
+            subscribed &= client.subscribe(backpack::Channel::USER_ORDERS, "");
+            
+            // Subscribe to user positions
+            subscribed &= client.subscribe(backpack::Channel::USER_POSITIONS, "");
+            
+            // Subscribe to user balances
+            subscribed &= client.subscribe(backpack::Channel::USER_BALANCES, "");
+            
+            // Subscribe to user trades
+            subscribed &= client.subscribe(backpack::Channel::USER_TRADES, "");
+        }
+        
+        if (!subscribed) {
+            std::cerr << "Failed to subscribe to one or more channels" << std::endl;
+            return 1;
+        }
+        
+        // Track subscription status
+        struct ChannelStatus {
+            // Public channels
+            bool ticker = false;
+            bool trades = false;
+            bool candles = false;
+            bool order_book = false;
+            
+            // Private channels
+            bool user_orders = false;
+            bool user_positions = false;
+            bool user_balances = false;
+            bool user_trades = false;
+        } status;
+        
+        // Register callback to handle market data
+        client.register_general_callback([&status, authenticated](const nlohmann::json& msg) {
+            if (!msg.contains("stream")) {
+                return;
             }
             
-            std::cout << "Asks:" << std::endl;
-            for (size_t i = 0; i < std::min<size_t>(5, book.asks.size()); ++i) {
-                std::cout << "  " << std::fixed << std::setprecision(8) 
-                          << book.asks[i].price << " : " 
-                          << book.asks[i].quantity << std::endl;
+            std::string stream = msg["stream"];
+            
+            // Update status based on received data
+            if (stream.find("ticker") != std::string::npos) {
+                status.ticker = true;
+            } else if (stream.find("trades") != std::string::npos && stream.find("user") == std::string::npos) {
+                status.trades = true;
+            } else if (stream.find("candle") != std::string::npos) {
+                status.candles = true;
+            } else if (stream.find("depth") != std::string::npos) {
+                status.order_book = true;
+            } else if (stream.find("orders") != std::string::npos) {
+                status.user_orders = true;
+                // Print order updates
+                if (msg.contains("data")) {
+                    const auto& data = msg["data"];
+                    std::cout << "Order Update: " << data.dump(2) << std::endl;
+                }
+            } else if (stream.find("positions") != std::string::npos) {
+                status.user_positions = true;
+                // Print position updates
+                if (msg.contains("data")) {
+                    const auto& data = msg["data"];
+                    std::cout << "Position Update: " << data.dump(2) << std::endl;
+                }
+            } else if (stream.find("balances") != std::string::npos) {
+                status.user_balances = true;
+                // Print balance updates
+                if (msg.contains("data")) {
+                    const auto& data = msg["data"];
+                    std::cout << "Balance Update: " << data.dump(2) << std::endl;
+                }
+            } else if (stream.find("user.trades") != std::string::npos) {
+                status.user_trades = true;
+                // Print user trade updates
+                if (msg.contains("data")) {
+                    const auto& data = msg["data"];
+                    std::cout << "User Trade: " << data.dump(2) << std::endl;
+                }
             }
             
+            // Print status periodically
+            std::cout << "Waiting for data... Status:\n"
+                      << "Public Channels:\n"
+                      << "  Ticker: " << (status.ticker ? "✓" : "✗") << "\n"
+                      << "  Trades: " << (status.trades ? "✓" : "✗") << "\n"
+                      << "  Candles: " << (status.candles ? "✓" : "✗") << "\n"
+                      << "  Order Book: " << (status.order_book ? "✓" : "✗");
+            
+            if (authenticated) {
+                std::cout << "\nPrivate Channels:\n"
+                          << "  Orders: " << (status.user_orders ? "✓" : "✗") << "\n"
+                          << "  Positions: " << (status.user_positions ? "✓" : "✗") << "\n"
+                          << "  Balances: " << (status.user_balances ? "✓" : "✗") << "\n"
+                          << "  User Trades: " << (status.user_trades ? "✓" : "✗");
+            }
             std::cout << std::endl;
         });
-        
-        // Subscribe to authenticated channels (if credentials provided)
-        /*
-        // Subscribe to user orders
-        client.subscribe_user_orders([](const backpack::Order& order) {
-            std::cout << "Order [" << order.symbol << "] "
-                      << "ID: " << order.id << ", "
-                      << "Type: " << backpack::order_type_to_string(order.type) << ", "
-                      << "Side: " << backpack::order_side_to_string(order.side) << ", "
-                      << "Price: " << order.price << ", "
-                      << "Quantity: " << order.quantity << ", "
-                      << "Status: " << backpack::order_status_to_string(order.status)
-                      << std::endl;
-        });
-        
-        // Subscribe to user balances
-        client.subscribe_user_balances([](const backpack::Balance& balance) {
-            std::cout << "Balance [" << balance.asset << "] "
-                      << "Free: " << balance.free << ", "
-                      << "Locked: " << balance.locked
-                      << std::endl;
-        });
-        */
         
         // Set up ping to keep connection alive
         std::thread ping_thread([&client]() {
             while (running) {
                 if (client.is_connected()) {
                     client.ping();
+                } else {
+                    std::cerr << "Lost connection!" << std::endl;
                 }
                 std::this_thread::sleep_for(std::chrono::seconds(30));
             }
@@ -126,7 +185,49 @@ int main(int argc, char* argv[]) {
         
         // Main loop - keep program running until signal is received
         std::cout << "WebSocket client running. Press Ctrl+C to exit." << std::endl;
+        
+        // Monitor subscription status
+        int check_count = 0;
+        while (running && check_count < 30) {  // Wait up to 30 seconds for initial data
+            if (!client.is_connected()) {
+                std::cerr << "Connection lost!" << std::endl;
+                break;
+            }
+            
+            bool all_public_ready = status.ticker && status.trades && 
+                                  status.candles && status.order_book;
+                                  
+            bool all_private_ready = !authenticated || 
+                                   (status.user_orders && status.user_positions && 
+                                    status.user_balances && status.user_trades);
+                                    
+            if (!all_public_ready || !all_private_ready) {
+                std::cout << "Waiting for data... Status:\n"
+                          << "Public Channels:\n"
+                          << "  Ticker: " << (status.ticker ? "✓" : "✗") << "\n"
+                          << "  Trades: " << (status.trades ? "✓" : "✗") << "\n"
+                          << "  Candles: " << (status.candles ? "✓" : "✗") << "\n"
+                          << "  Order Book: " << (status.order_book ? "✓" : "✗");
+                
+                if (authenticated) {
+                    std::cout << "\nPrivate Channels:\n"
+                              << "  Orders: " << (status.user_orders ? "✓" : "✗") << "\n"
+                              << "  Positions: " << (status.user_positions ? "✓" : "✗") << "\n"
+                              << "  Balances: " << (status.user_balances ? "✓" : "✗") << "\n"
+                              << "  User Trades: " << (status.user_trades ? "✓" : "✗");
+                }
+                std::cout << std::endl;
+            }
+            
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            check_count++;
+        }
+        
         while (running) {
+            if (!client.is_connected()) {
+                std::cerr << "Connection lost!" << std::endl;
+                break;
+            }
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
         

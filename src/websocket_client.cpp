@@ -1,6 +1,9 @@
 #include "backpack/websocket_client.hpp"
 #include <iostream>
 #include <sstream>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <cstring>
 
 namespace backpack {
 
@@ -13,6 +16,12 @@ BackpackWebSocketClient::BackpackWebSocketClient(const std::string& base_url)
     // Clear access and error logs to reduce output noise
     client_.clear_access_channels(websocketpp::log::alevel::all);
     client_.clear_error_channels(websocketpp::log::elevel::all);
+    
+    // Set up error logging
+    client_.set_access_channels(websocketpp::log::alevel::connect | 
+                              websocketpp::log::alevel::disconnect | 
+                              websocketpp::log::alevel::app);
+    client_.set_error_channels(websocketpp::log::elevel::all);
     
     // Initialize ASIO
     client_.init_asio();
@@ -61,6 +70,25 @@ bool BackpackWebSocketClient::connect() {
         if (ec) {
             std::cerr << "Could not create connection: " << ec.message() << std::endl;
             return false;
+        }
+
+        // Add required headers for signed requests
+        if (credentials_.is_valid()) {
+            auto timestamp = std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()
+            ).count());
+            
+            // Default window to 5000ms
+            const std::string window = "5000";
+            
+            // Create the signature base string
+            std::string signature_base = timestamp + "GET/ws" + window;
+            
+            // Add headers
+            con->append_header("X-Timestamp", timestamp);
+            con->append_header("X-Window", window);
+            con->append_header("X-API-Key", credentials_.api_key);
+            con->append_header("X-Signature", generate_signature(signature_base, credentials_.api_secret));
         }
         
         connection_handle_ = con->get_handle();
@@ -245,7 +273,7 @@ void BackpackWebSocketClient::ping() {
     
     try {
         json ping_payload = {
-            {"type", "ping"}
+            {"method", "PING"}
         };
         std::string ping_message = ping_payload.dump();
         
@@ -256,14 +284,12 @@ void BackpackWebSocketClient::ping() {
     }
 }
 
-WebsocketTlsContext BackpackWebSocketClient::on_tls_init() {
-    // Create a TLS context
-    WebsocketTlsContext ctx = std::make_shared<websocketpp::lib::asio::ssl::context>(
-        websocketpp::lib::asio::ssl::context::sslv23
+websocketpp::lib::shared_ptr<websocketpp::lib::asio::ssl::context> BackpackWebSocketClient::on_tls_init() {
+    auto ctx = websocketpp::lib::make_shared<websocketpp::lib::asio::ssl::context>(
+        websocketpp::lib::asio::ssl::context::sslv23_client
     );
     
     try {
-        // Set up TLS options
         ctx->set_options(
             websocketpp::lib::asio::ssl::context::default_workarounds |
             websocketpp::lib::asio::ssl::context::no_sslv2 |
@@ -271,8 +297,10 @@ WebsocketTlsContext BackpackWebSocketClient::on_tls_init() {
             websocketpp::lib::asio::ssl::context::single_dh_use
         );
         
+        ctx->set_verify_mode(websocketpp::lib::asio::ssl::verify_none);
+        
     } catch (const std::exception& e) {
-        std::cerr << "TLS initialization error: " << e.what() << std::endl;
+        std::cerr << "Error in TLS init: " << e.what() << std::endl;
     }
     
     return ctx;
@@ -320,13 +348,14 @@ void BackpackWebSocketClient::on_message(WebsocketConnectionHdl hdl, WebsocketCl
 }
 
 void BackpackWebSocketClient::on_error(WebsocketConnectionHdl hdl, const websocketpp::lib::error_code& ec) {
-    if (ec) {
-        std::cerr << "WebSocket error: " << ec.message() << std::endl;
-    } else {
-        std::cerr << "WebSocket error: Unknown error" << std::endl;
+    std::cerr << "WebSocket error: " << (ec ? ec.message() : "Unknown error");
+    if (client_.get_con_from_hdl(hdl)) {
+        std::cerr << " (Error code: " << client_.get_con_from_hdl(hdl)->get_ec() << ")";
     }
+    std::cerr << std::endl;
     
     connected_ = false;
+    authenticated_ = false;
 }
 
 void BackpackWebSocketClient::run_client() {
@@ -381,6 +410,9 @@ bool BackpackWebSocketClient::send_message(const std::string& message) {
     }
     
     try {
+        // Log outgoing message
+        std::cout << "Sending message: " << message << std::endl;
+        
         std::lock_guard<std::mutex> lock(queue_mutex_);
         message_queue_.push(message);
         queue_condition_.notify_one();
@@ -405,20 +437,44 @@ std::string BackpackWebSocketClient::get_callback_key(Channel channel, const std
 
 void BackpackWebSocketClient::handle_message(const json& message) {
     try {
-        // Extract the channel, symbol, and type
-        if (!message.contains("channel") || !message.contains("data")) {
+        // Log raw message for debugging
+        std::cout << "Received message: " << message.dump(2) << std::endl;
+        
+        // Check if it's an error message
+        if (message.contains("error")) {
+            std::cerr << "Error from server: " << message["error"].dump() << std::endl;
             return;
         }
         
-        std::string channel_str = message["channel"];
-        auto channel_opt = string_to_channel(channel_str);
+        // Extract stream and data from the message
+        if (!message.contains("stream") || !message.contains("data")) {
+            return;
+        }
         
+        std::string stream = message["stream"];
+        const json& data = message["data"];
+        
+        // Parse the stream name to get channel and symbol
+        std::string channel_str;
+        std::string symbol;
+        
+        size_t dot_pos = stream.find('.');
+        if (dot_pos != std::string::npos) {
+            channel_str = stream.substr(0, dot_pos);
+            symbol = stream.substr(dot_pos + 1);
+            // Convert symbol format from SOL_USDC back to SOL-USDC
+            std::replace(symbol.begin(), symbol.end(), '_', '-');
+        } else {
+            channel_str = stream;
+        }
+        
+        auto channel_opt = string_to_channel(channel_str);
         if (!channel_opt) {
+            std::cerr << "Unknown channel in stream: " << stream << std::endl;
             return;
         }
         
         Channel channel = *channel_opt;
-        std::string symbol = message.value("symbol", "");
         
         // Call specific callback if registered
         std::lock_guard<std::mutex> lock(mutex_);
@@ -426,19 +482,35 @@ void BackpackWebSocketClient::handle_message(const json& message) {
         
         auto it = callbacks_.find(key);
         if (it != callbacks_.end() && it->second) {
-            it->second(message);
+            it->second(data);  // Pass only the data part
         } else {
             // Try with just the channel (for all symbols)
             key = get_callback_key(channel, "");
             it = callbacks_.find(key);
             if (it != callbacks_.end() && it->second) {
-                it->second(message);
+                it->second(data);  // Pass only the data part
             }
         }
         
     } catch (const std::exception& e) {
         std::cerr << "Error handling message: " << e.what() << std::endl;
     }
+}
+
+// Helper function to generate HMAC-SHA256 signature
+std::string BackpackWebSocketClient::generate_signature(const std::string& message, const std::string& secret) {
+    unsigned char* digest = HMAC(EVP_sha256(),
+                                secret.c_str(), secret.length(),
+                                reinterpret_cast<const unsigned char*>(message.c_str()), message.length(),
+                                nullptr, nullptr);
+    
+    char hex[65];
+    for (int i = 0; i < 32; i++) {
+        sprintf(hex + i * 2, "%02x", digest[i]);
+    }
+    hex[64] = 0;
+    
+    return std::string(hex);
 }
 
 } // namespace backpack

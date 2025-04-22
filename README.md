@@ -1,98 +1,93 @@
-# Backpack Exchange C++ SDK
+# Backpack C++ SDK
 
-A C++ SDK for interacting with the Backpack Exchange API. This SDK provides easy access to market data streams, user data streams, and trading functionality through both WebSocket and REST API connections.
+A modern C++ SDK for interacting with the [Backpack Exchange](https://backpack.exchange) WebSocket API. This SDK provides a robust implementation for real-time market data streaming and account management.
 
 ## Features
 
-- WebSocket client for real-time data:
-  - Market data (tickers, trades, order book, candles)
-  - User data (orders, trades, positions, balances)
-- REST API client for trading:
-  - Market data retrieval
-  - Order management (create, cancel, query)
-  - Account information
-  - Trading history
-- Flexible callback system for handling real-time updates
-- Thread-safe implementation
-- Comprehensive type system for Backpack Exchange data structures
+- Real-time market data streaming
+  - Ticker updates
+  - Order book (depth) updates
+  - Trade updates
+  - Candlestick data (multiple timeframes)
+- Private data streaming (with authentication)
+  - Order updates
+  - Position updates
+  - Balance updates
+  - User trade updates
+- Robust WebSocket connection handling
+  - Automatic reconnection
+  - Heartbeat monitoring
+  - Error handling
+- Modern C++ design
+  - Type-safe enums for channels and order types
+  - RAII principles
+  - Exception safety
+  - Thread safety
 
 ## Dependencies
 
-- C++17 or newer
+- C++17 or later
+- CMake 3.12 or later
 - OpenSSL
-- CURL
-- Boost (for websocketpp)
-- WebSocket++ (automatically downloaded via CMake)
-- nlohmann_json (automatically downloaded via CMake if not found)
+- [nlohmann/json](https://github.com/nlohmann/json)
+- [WebSocket++](https://github.com/zaphoyd/websocketpp)
+- Boost (for WebSocket++)
 
-## Building
+## Installation
 
-### Prerequisites
-
-Make sure you have the following installed:
-- CMake (version 3.14 or newer)
-- A C++17 compatible compiler (GCC, Clang, MSVC)
-- OpenSSL development libraries
-- CURL development libraries
-- Boost development libraries
-
-### Build Instructions
-
+1. Clone the repository:
 ```bash
-# Clone the repository
 git clone https://github.com/tribecajack/backpack-cpp-sdk.git
 cd backpack-cpp-sdk
+```
 
-# Create a build directory
+2. Create build directory and build:
+```bash
 mkdir build
 cd build
-
-# Configure and build
 cmake ..
-make -j$(nproc)
-
-# Install (optional)
-sudo make install
+make
 ```
 
 ## Usage
 
-### WebSocket API Example
-
-Here's a simple example of using the SDK to subscribe to various data streams:
+### WebSocket Market Data Example
 
 ```cpp
-#include <iostream>
 #include <backpack/backpack_client.hpp>
-#include <thread>
-#include <chrono>
+#include <iostream>
 
 int main() {
-    // Create client instance
-    backpack::BackpackClient client;
+    // Create WebSocket client
+    backpack::BackpackWebSocketClient client("wss://ws.backpack.exchange");
     
     // Connect to WebSocket server
     if (!client.connect()) {
-        std::cerr << "Failed to connect to WebSocket server" << std::endl;
+        std::cerr << "Failed to connect" << std::endl;
         return 1;
     }
     
     // Optional: Set API credentials for authenticated endpoints
-    // client.set_credentials("your-api-key", "your-api-secret");
+    const char* api_key = std::getenv("BACKPACK_API_KEY");
+    const char* api_secret = std::getenv("BACKPACK_API_SECRET");
+    if (api_key && api_secret) {
+        client.set_credentials(api_key, api_secret);
+    }
     
-    // Subscribe to ticker data
-    client.subscribe_ticker("SOL-USDC", [](const backpack::Ticker& ticker) {
-        std::cout << "Ticker: " << ticker.symbol << " Last price: " << ticker.last_price << std::endl;
+    // Subscribe to channels
+    const std::string symbol = "SOL-USDC";
+    client.subscribe(backpack::Channel::TICKER, symbol);
+    client.subscribe(backpack::Channel::TRADES, symbol);
+    client.subscribe(backpack::Channel::DEPTH, symbol);
+    client.subscribe(backpack::Channel::CANDLES_1M, symbol);
+    
+    // Register callback for market data
+    client.register_general_callback([](const nlohmann::json& msg) {
+        std::cout << "Received: " << msg.dump(2) << std::endl;
     });
     
-    // Subscribe to trade data
-    client.subscribe_trades("SOL-USDC", [](const backpack::Trade& trade) {
-        std::cout << "Trade: " << trade.symbol << " Price: " << trade.price 
-                  << " Quantity: " << trade.quantity << std::endl;
-    });
-    
-    // Keep the program running
-    while (true) {
+    // Keep connection alive
+    while (client.is_connected()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     
@@ -100,171 +95,101 @@ int main() {
 }
 ```
 
-### REST API Example
+### Building the Example
 
-Here's an example of using the REST API for trading:
+```bash
+cd build
+cmake ..
+make
+./websocket_example
+```
 
+## Available Channels
+
+### Public Channels
+
+- `TICKER`: Real-time price and 24h statistics
+- `TRADES`: Real-time trade execution data
+- `DEPTH`: Real-time order book updates
+- `CANDLES_1M`: 1-minute candlestick data
+- `CANDLES_5M`: 5-minute candlestick data
+- `CANDLES_15M`: 15-minute candlestick data
+- `CANDLES_1H`: 1-hour candlestick data
+- `CANDLES_4H`: 4-hour candlestick data
+- `CANDLES_1D`: 1-day candlestick data
+
+### Private Channels (Requires Authentication)
+
+- `USER_ORDERS`: Personal order updates
+- `USER_TRADES`: Personal trade updates
+- `USER_POSITIONS`: Position updates
+- `USER_BALANCES`: Balance updates
+
+## Authentication
+
+To use authenticated endpoints, set your API credentials:
+
+1. As environment variables:
+```bash
+export BACKPACK_API_KEY="your_api_key"
+export BACKPACK_API_SECRET="your_api_secret"
+```
+
+2. Or programmatically:
 ```cpp
-#include <iostream>
-#include <backpack/backpack_client.hpp>
+client.set_credentials("your_api_key", "your_api_secret");
+```
 
-int main() {
-    // Create client instance
-    backpack::BackpackClient client;
-    
-    // Set API credentials (required for trading)
-    client.set_credentials("your-api-key", "your-api-secret");
-    
-    try {
-        // Get market data
-        backpack::Ticker ticker = client.get_ticker("SOL-USDC");
-        std::cout << "SOL-USDC Last Price: " << ticker.last_price << std::endl;
-        
-        // Place a limit buy order
-        backpack::OrderRequest buy_order;
-        buy_order.symbol = "SOL-USDC";
-        buy_order.side = backpack::OrderSide::BUY;
-        buy_order.type = backpack::OrderType::LIMIT;
-        buy_order.price = ticker.last_price * 0.95;  // 5% below current price
-        buy_order.quantity = 1.0;
-        
-        // Test the order first
-        if (client.test_order(buy_order)) {
-            // Place the actual order
-            backpack::Order placed_order = client.create_order(buy_order);
-            std::cout << "Order placed: ID=" << placed_order.id 
-                      << ", Status=" << backpack::order_status_to_string(placed_order.status) 
-                      << std::endl;
-            
-            // Get all open orders
-            std::vector<backpack::Order> open_orders = client.get_open_orders();
-            std::cout << "Open Orders: " << open_orders.size() << std::endl;
-            
-            // Cancel the order
-            if (client.cancel_order("SOL-USDC", placed_order.id)) {
-                std::cout << "Order canceled successfully" << std::endl;
-            }
-        } else {
-            std::cout << "Order validation failed" << std::endl;
-        }
-        
-        // Get account balances
-        std::vector<backpack::Balance> balances = client.get_balances();
-        for (const auto& balance : balances) {
-            if (balance.free > 0 || balance.locked > 0) {
-                std::cout << "Balance: " << balance.asset 
-                          << " Free: " << balance.free 
-                          << " Locked: " << balance.locked 
-                          << std::endl;
-            }
-        }
-        
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
-        return 1;
-    }
-    
-    return 0;
+## Message Formats
+
+### Ticker Update
+```json
+{
+  "stream": "ticker.SOL_USDC",
+  "data": {
+    "e": "ticker",
+    "s": "SOL_USDC",
+    "c": "124.50",
+    "h": "130.30",
+    "l": "124.19",
+    "v": "260656",
+    "n": 324595
+  }
 }
 ```
 
-### Authenticated WebSocket Endpoints
-
-For authenticated WebSocket endpoints, you need to set your API credentials and authenticate:
-
-```cpp
-// Set API credentials
-client.set_credentials("your-api-key", "your-api-secret");
-
-// Authenticate connection
-if (!client.authenticate()) {
-    std::cerr << "Authentication failed" << std::endl;
-    return 1;
+### Order Book Update
+```json
+{
+  "stream": "depth.SOL_USDC",
+  "data": {
+    "e": "depth",
+    "s": "SOL_USDC",
+    "U": 2060508621,
+    "u": 2060508621,
+    "b": [["124.20", "6.05"]],
+    "a": []
+  }
 }
-
-// Subscribe to user orders
-client.subscribe_user_orders([](const backpack::Order& order) {
-    std::cout << "Order: " << order.id << " Status: " 
-              << backpack::order_status_to_string(order.status) << std::endl;
-});
-
-// Subscribe to user balances
-client.subscribe_user_balances([](const backpack::Balance& balance) {
-    std::cout << "Balance: " << balance.asset << " Free: " << balance.free 
-              << " Locked: " << balance.locked << std::endl;
-});
 ```
 
-## Examples
+## Error Handling
 
-See the `examples` directory for complete working examples:
+The SDK uses exceptions for error handling. Main exception types:
 
-- `websocket_example.cpp`: Demonstrates WebSocket subscriptions for market data
+- `BackpackError`: Base exception class
+- `ConnectionError`: WebSocket connection issues
+- `AuthenticationError`: Invalid credentials
+- `SubscriptionError`: Channel subscription failures
 
-## API Documentation
+## Contributing
 
-### Main Classes
-
-- `BackpackClient`: High-level client for interacting with Backpack Exchange (both WebSocket and REST)
-- `BackpackWebSocketClient`: Low-level WebSocket client handling the WebSocket connections
-- `RestClient`: Low-level REST client handling the HTTP requests
-- Data structures: `Ticker`, `Trade`, `Candle`, `OrderBook`, `Order`, `Balance`, `Position`, etc.
-
-### WebSocket Channels
-
-Available WebSocket channels:
-
-- `Channel::TICKER`: Real-time ticker data
-- `Channel::TRADES`: Real-time trade data
-- `Channel::CANDLES_1M`: 1-minute candle data
-- `Channel::CANDLES_5M`: 5-minute candle data
-- `Channel::CANDLES_15M`: 15-minute candle data
-- `Channel::CANDLES_1H`: 1-hour candle data
-- `Channel::CANDLES_4H`: 4-hour candle data
-- `Channel::CANDLES_1D`: 1-day candle data
-- `Channel::DEPTH`: Order book updates
-- `Channel::DEPTH_SNAPSHOT`: Full order book snapshots
-- `Channel::USER_ORDERS`: User order updates (authenticated)
-- `Channel::USER_TRADES`: User trade updates (authenticated)
-- `Channel::USER_POSITIONS`: User position updates (authenticated)
-- `Channel::USER_BALANCES`: User balance updates (authenticated)
-
-### REST API Endpoints
-
-The SDK supports the following REST API endpoints:
-
-#### Public Endpoints
-
-- `get_server_time()`: Get server time
-- `get_exchange_info()`: Get exchange information
-- `get_ticker(symbol)`: Get ticker for a symbol
-- `get_all_tickers()`: Get tickers for all symbols
-- `get_order_book(symbol, limit)`: Get order book for a symbol
-- `get_recent_trades(symbol, limit)`: Get recent trades for a symbol
-- `get_historical_trades(symbol, limit, from_id)`: Get historical trades for a symbol
-- `get_candles(symbol, interval, limit, start_time, end_time)`: Get candles for a symbol
-
-#### Private Endpoints (require authentication)
-
-- `create_order(order)`: Create a new order
-- `test_order(order)`: Test an order without placing it
-- `cancel_order(symbol, order_id)`: Cancel an order
-- `cancel_order_by_client_id(symbol, client_order_id)`: Cancel an order by client order ID
-- `cancel_all_orders(symbol)`: Cancel all open orders for a symbol
-- `get_order(symbol, order_id)`: Get an order by ID
-- `get_order_by_client_id(symbol, client_order_id)`: Get an order by client order ID
-- `get_open_orders(symbol)`: Get all open orders
-- `get_all_orders(symbol, limit, start_time, end_time)`: Get all orders (open and closed)
-- `get_account()`: Get account information
-- `get_balances()`: Get account balances
-- `get_account_trades(symbol, limit, start_time, end_time)`: Get account trades
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## References
+## Disclaimer
 
-- [Backpack Exchange Documentation](https://docs.backpack.exchange/)
-- [Backpack Exchange WebSocket API](https://docs.backpack.exchange/websockets)
-- [Backpack Exchange REST API](https://docs.backpack.exchange/rest-api)
+This is an unofficial SDK and is not affiliated with Backpack Exchange. Use at your own risk.
