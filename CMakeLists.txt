@@ -5,7 +5,15 @@ project(backpack_sdk)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Set policy for Boost
+cmake_policy(SET CMP0074 NEW)
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 OLD)
+endif()
+
 # Find required packages
+set(Boost_USE_STATIC_LIBS ON)
+set(OPENSSL_USE_STATIC_LIBS ON)
 find_package(Boost 1.88.0 REQUIRED COMPONENTS system thread)
 find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
 find_package(CURL REQUIRED)
@@ -20,6 +28,7 @@ add_library(${PROJECT_NAME} STATIC
 target_link_libraries(${PROJECT_NAME}
     PUBLIC
     Boost::system
+    Boost::thread
     OpenSSL::SSL
     OpenSSL::Crypto
     CURL::libcurl
