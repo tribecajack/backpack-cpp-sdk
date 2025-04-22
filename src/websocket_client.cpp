@@ -497,6 +497,16 @@ void BackpackWebSocketClient::handle_message(const json& message) {
     }
 }
 
+namespace backpack {
+
+
+// All functionality lives in backpack::WebSocketClient’s header.
+// This translation unit exists only to give the library a .cpp file
+// so the build system always has at least one source file.  
+// Add out‑of‑line definitions here later if you move code out of the header.
+
+main
+
 // Helper function to generate HMAC-SHA256 signature
 std::string BackpackWebSocketClient::generate_signature(const std::string& message, const std::string& secret) {
     unsigned char* digest = HMAC(EVP_sha256(),

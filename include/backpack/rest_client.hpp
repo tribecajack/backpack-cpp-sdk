@@ -47,10 +47,10 @@ public:
     /**
      * @brief Set API credentials
      * 
-     * @param api_key API key
-     * @param api_secret API secret
+     * @param api_key API key (public key)
+     * @param base64_private_key Base64 encoded private key
      */
-    void set_credentials(const std::string& api_key, const std::string& api_secret);
+    void set_credentials(const std::string& api_key, const std::string& base64_private_key);
     
     /**
      * @brief Check if credentials are set
@@ -153,42 +153,42 @@ public:
      * @brief Cancel an order
      * 
      * @param symbol Trading pair (e.g., "SOL-USDC")
-     * @param order_id Order ID
+     * @param order_id Order ID to cancel
      * @return true if cancellation successful, false otherwise
      */
     bool cancel_order(const std::string& symbol, const std::string& order_id);
     
     /**
-     * @brief Cancel an order using client order ID
+     * @brief Cancel an order by client order ID
      * 
      * @param symbol Trading pair (e.g., "SOL-USDC")
-     * @param client_order_id Client order ID
+     * @param client_order_id Client order ID to cancel
      * @return true if cancellation successful, false otherwise
      */
     bool cancel_order_by_client_id(const std::string& symbol, const std::string& client_order_id);
     
     /**
-     * @brief Cancel all open orders for a symbol
+     * @brief Cancel all open orders
      * 
-     * @param symbol Trading pair (e.g., "SOL-USDC"), if empty cancels for all symbols
-     * @return Number of orders canceled
+     * @param symbol Trading pair to cancel orders for (optional)
+     * @return Number of orders cancelled
      */
     int cancel_all_orders(const std::string& symbol = "");
     
     /**
-     * @brief Get an order by ID
+     * @brief Get order status
      * 
      * @param symbol Trading pair (e.g., "SOL-USDC")
-     * @param order_id Order ID
+     * @param order_id Order ID to query
      * @return Order information
      */
     Order get_order(const std::string& symbol, const std::string& order_id);
     
     /**
-     * @brief Get an order by client order ID
+     * @brief Get order status by client order ID
      * 
      * @param symbol Trading pair (e.g., "SOL-USDC")
-     * @param client_order_id Client order ID
+     * @param client_order_id Client order ID to query
      * @return Order information
      */
     Order get_order_by_client_id(const std::string& symbol, const std::string& client_order_id);
@@ -196,22 +196,21 @@ public:
     /**
      * @brief Get all open orders
      * 
-     * @param symbol Trading pair (e.g., "SOL-USDC"), if empty returns orders for all symbols
-     * @return Vector of orders
+     * @param symbol Trading pair to filter by (optional)
+     * @return Vector of open orders
      */
     std::vector<Order> get_open_orders(const std::string& symbol = "");
     
     /**
-     * @brief Get all orders (open and closed)
+     * @brief Get all orders
      * 
      * @param symbol Trading pair (e.g., "SOL-USDC")
-     * @param limit Maximum number of orders to return (default: 100, max: 500)
-     * @param start_time Start time in milliseconds since epoch (optional)
-     * @param end_time End time in milliseconds since epoch (optional)
+     * @param limit Maximum number of orders to return (default: 100, max: 1000)
+     * @param from_id Return orders after this ID (optional)
      * @return Vector of orders
      */
     std::vector<Order> get_all_orders(const std::string& symbol, int limit = 100, 
-                                     int64_t start_time = 0, int64_t end_time = 0);
+                                     const std::string& from_id = "");
     
     /**
      * @brief Get account information
@@ -231,13 +230,12 @@ public:
      * @brief Get account trades
      * 
      * @param symbol Trading pair (e.g., "SOL-USDC")
-     * @param limit Maximum number of trades to return (default: 100, max: 500)
-     * @param start_time Start time in milliseconds since epoch (optional)
-     * @param end_time End time in milliseconds since epoch (optional)
+     * @param limit Maximum number of trades to return (default: 100, max: 1000)
+     * @param from_id Return trades after this ID (optional)
      * @return Vector of trades
      */
     std::vector<Trade> get_account_trades(const std::string& symbol, int limit = 100,
-                                         int64_t start_time = 0, int64_t end_time = 0);
+                                         const std::string& from_id = "");
     
 private:
     std::string base_url_;
@@ -250,9 +248,9 @@ private:
      * @param endpoint API endpoint
      * @param method HTTP method
      * @param params Query parameters
-     * @param body Request body (for POST/PUT requests)
-     * @param auth_required Whether the request requires authentication
-     * @return API response as JSON
+     * @param body Request body
+     * @param auth_required Whether authentication is required
+     * @return JSON response
      */
     json send_request(const std::string& endpoint, HttpMethod method, 
                      const std::map<std::string, std::string>& params = {},
@@ -266,21 +264,21 @@ private:
      * @param timestamp Request timestamp
      * @param params Query parameters
      * @param body Request body
-     * @return Request signature
+     * @return Signature
      */
     std::string sign_request(HttpMethod method, const std::string& endpoint, int64_t timestamp,
-                            const std::map<std::string, std::string>& params, const std::string& body);
+                           const std::map<std::string, std::string>& params, const std::string& body);
     
     /**
      * @brief Convert HTTP method to string
      * 
      * @param method HTTP method
-     * @return Method as string
+     * @return String representation
      */
     std::string http_method_to_string(HttpMethod method);
     
     /**
-     * @brief Callback function for curl to write response data
+     * @brief CURL write callback
      */
     static size_t write_callback(char* ptr, size_t size, size_t nmemb, std::string* data);
 };

@@ -248,7 +248,7 @@ public:
     Order create_order(const OrderRequest& order);
     
     /**
-     * @brief Test creating an order without actually placing it
+     * @brief Test order creation without actually placing it
      * 
      * @param order Order to test
      * @return true if order would be valid, false otherwise
@@ -259,42 +259,42 @@ public:
      * @brief Cancel an order
      * 
      * @param symbol Trading pair (e.g., "SOL-USDC")
-     * @param order_id Order ID
+     * @param order_id Order ID to cancel
      * @return true if cancellation successful, false otherwise
      */
     bool cancel_order(const std::string& symbol, const std::string& order_id);
     
     /**
-     * @brief Cancel an order using client order ID
+     * @brief Cancel an order by client order ID
      * 
      * @param symbol Trading pair (e.g., "SOL-USDC")
-     * @param client_order_id Client order ID
+     * @param client_order_id Client order ID to cancel
      * @return true if cancellation successful, false otherwise
      */
     bool cancel_order_by_client_id(const std::string& symbol, const std::string& client_order_id);
     
     /**
-     * @brief Cancel all open orders for a symbol
+     * @brief Cancel all open orders
      * 
-     * @param symbol Trading pair (e.g., "SOL-USDC"), if empty cancels for all symbols
-     * @return Number of orders canceled
+     * @param symbol Trading pair to cancel orders for (optional)
+     * @return Number of orders cancelled
      */
     int cancel_all_orders(const std::string& symbol = "");
     
     /**
-     * @brief Get an order by ID
+     * @brief Get order status
      * 
      * @param symbol Trading pair (e.g., "SOL-USDC")
-     * @param order_id Order ID
+     * @param order_id Order ID to query
      * @return Order information
      */
     Order get_order(const std::string& symbol, const std::string& order_id);
     
     /**
-     * @brief Get an order by client order ID
+     * @brief Get order status by client order ID
      * 
      * @param symbol Trading pair (e.g., "SOL-USDC")
-     * @param client_order_id Client order ID
+     * @param client_order_id Client order ID to query
      * @return Order information
      */
     Order get_order_by_client_id(const std::string& symbol, const std::string& client_order_id);
@@ -302,22 +302,21 @@ public:
     /**
      * @brief Get all open orders
      * 
-     * @param symbol Trading pair (e.g., "SOL-USDC"), if empty returns orders for all symbols
-     * @return Vector of orders
+     * @param symbol Trading pair to filter by (optional)
+     * @return Vector of open orders
      */
     std::vector<Order> get_open_orders(const std::string& symbol = "");
     
     /**
-     * @brief Get all orders (open and closed)
+     * @brief Get all orders
      * 
      * @param symbol Trading pair (e.g., "SOL-USDC")
-     * @param limit Maximum number of orders to return (default: 100, max: 500)
-     * @param start_time Start time in milliseconds since epoch (optional)
-     * @param end_time End time in milliseconds since epoch (optional)
+     * @param limit Maximum number of orders to return (default: 100, max: 1000)
+     * @param from_id Return orders after this ID (optional)
      * @return Vector of orders
      */
     std::vector<Order> get_all_orders(const std::string& symbol, int limit = 100, 
-                                     int64_t start_time = 0, int64_t end_time = 0);
+                                     const std::string& from_id = "");
     
     /**
      * @brief Get account information
@@ -337,39 +336,31 @@ public:
      * @brief Get account trades
      * 
      * @param symbol Trading pair (e.g., "SOL-USDC")
-     * @param limit Maximum number of trades to return (default: 100, max: 500)
-     * @param start_time Start time in milliseconds since epoch (optional)
-     * @param end_time End time in milliseconds since epoch (optional)
+     * @param limit Maximum number of trades to return (default: 100, max: 1000)
+     * @param from_id Return trades after this ID (optional)
      * @return Vector of trades
      */
     std::vector<Trade> get_account_trades(const std::string& symbol, int limit = 100,
-                                         int64_t start_time = 0, int64_t end_time = 0);
+                                         const std::string& from_id = "");
 
 private:
-    // WebSocket client
-    std::unique_ptr<BackpackWebSocketClient> ws_client_;
-    
-    // REST client
-    std::unique_ptr<RestClient> rest_client_;
-    
-    // Helper methods for generic subscription
     template<typename T>
     bool subscribe_to_channel(Channel channel, const std::string& symbol, std::function<void(const T&)> callback) {
-        auto json_callback = [callback, channel](const json& message) {
-            if (message.contains("data")) {
-                try {
-                    T data = T::from_json(message["data"]);
-                    callback(data);
-                } catch (const std::exception& e) {
-                    std::cerr << "Error parsing " << channel_to_string(channel) 
-                              << " data: " << e.what() << std::endl;
-                }
-            }
-        };
-        
-        ws_client_->register_callback(channel, symbol, json_callback);
-        return ws_client_->subscribe(channel, symbol);
+        // Implementation in source file
+        return false;
     }
+
+    std::unique_ptr<WebSocketClient> ws_client_;
+    std::unique_ptr<RestClient> rest_client_;
+    std::string websocket_url_;
+    std::string rest_url_;
+    std::string api_key_;
+    std::string api_secret_;
+    bool connected_ = false;
+    bool authenticated_ = false;
+    std::mutex mutex_;
+    
+    std::map<std::string, std::function<void(const nlohmann::json&)>> message_handlers_;
 };
 
 } // namespace backpack

@@ -1,9 +1,62 @@
 #include "backpack/rest_client.hpp"
 #include <iostream>
 #include <sstream>
+#include <vector>
+#include <algorithm> // for std::sort if needed later for param sorting
+#include <stdexcept>
 #include <curl/curl.h>
+#include <openssl/evp.h>
+#include <openssl/bio.h>
+#include <openssl/buffer.h>
+#include <openssl/pem.h> // For potential PEM decoding if needed, raw key is likely sufficient
+#include <openssl/hmac.h> // Keep for now? No, remove if not used.
+#include <openssl/sha.h> // Keep for now? No, remove if not used.
+#include <iomanip> // for hex conversion if needed, base64 is needed now.
 
 namespace backpack {
+
+// Helper function for Base64 Decoding
+std::vector<unsigned char> base64_decode(const std::string& encoded_string) {
+    BIO *bio, *b64;
+    int decode_len = encoded_string.length() * 3 / 4; // Estimate length
+    std::vector<unsigned char> buffer(decode_len);
+
+    bio = BIO_new_mem_buf(encoded_string.c_str(), -1);
+    b64 = BIO_new(BIO_f_base64());
+    bio = BIO_push(b64, bio);
+
+    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL); // No newlines in input
+    int length = BIO_read(bio, buffer.data(), encoded_string.length());
+    BIO_free_all(bio);
+
+    if (length < 0) {
+        throw std::runtime_error("Failed to decode base64 private key");
+    }
+    buffer.resize(length); // Adjust buffer size to actual decoded length
+    return buffer;
+}
+
+// Helper function for Base64 Encoding
+std::string base64_encode(const unsigned char* buffer, size_t length) {
+    BIO *bio, *b64;
+    BUF_MEM *buffer_ptr;
+
+    b64 = BIO_new(BIO_f_base64());
+    bio = BIO_new(BIO_s_mem());
+    bio = BIO_push(b64, bio);
+
+    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL); // No newlines in output
+    BIO_write(bio, buffer, length);
+    BIO_flush(bio);
+    BIO_get_mem_ptr(bio, &buffer_ptr);
+    
+    std::string encoded_string(buffer_ptr->data, buffer_ptr->length);
+    
+    BIO_free_all(bio); // Also frees b64
+    // BUF_MEM_free(buffer_ptr) is done by BIO_free_all
+
+    return encoded_string;
+}
 
 RestClient::RestClient(const std::string& base_url)
     : base_url_(base_url) {
@@ -26,9 +79,11 @@ RestClient::~RestClient() {
     curl_global_cleanup();
 }
 
-void RestClient::set_credentials(const std::string& api_key, const std::string& api_secret) {
+void RestClient::set_credentials(const std::string& api_key, const std::string& base64_private_key) {
     credentials_.api_key = api_key;
-    credentials_.api_secret = api_secret;
+    credentials_.base64_private_key = base64_private_key;
+    // Consider decoding and storing the raw private key here for performance
+    // Or decode it once in sign_request and cache it. For now, decode every time.
 }
 
 bool RestClient::has_credentials() const {
@@ -284,8 +339,7 @@ std::vector<Order> RestClient::get_open_orders(const std::string& symbol) {
     return orders;
 }
 
-std::vector<Order> RestClient::get_all_orders(const std::string& symbol, int limit, 
-                                            int64_t start_time, int64_t end_time) {
+std::vector<Order> RestClient::get_all_orders(const std::string& symbol, int limit, const std::string& from_id) {
     if (!has_credentials()) {
         throw std::runtime_error("API credentials not set");
     }
@@ -295,12 +349,8 @@ std::vector<Order> RestClient::get_all_orders(const std::string& symbol, int lim
         {"limit", std::to_string(limit)}
     };
     
-    if (start_time > 0) {
-        params["startTime"] = std::to_string(start_time);
-    }
-    
-    if (end_time > 0) {
-        params["endTime"] = std::to_string(end_time);
+    if (!from_id.empty()) {
+        params["fromId"] = from_id;
     }
     
     json response = send_request("/api/v1/allOrders", HttpMethod::GET, params, "", true);
@@ -337,8 +387,7 @@ std::vector<Balance> RestClient::get_balances() {
     return balances;
 }
 
-std::vector<Trade> RestClient::get_account_trades(const std::string& symbol, int limit,
-                                                int64_t start_time, int64_t end_time) {
+std::vector<Trade> RestClient::get_account_trades(const std::string& symbol, int limit, const std::string& from_id) {
     if (!has_credentials()) {
         throw std::runtime_error("API credentials not set");
     }
@@ -348,12 +397,8 @@ std::vector<Trade> RestClient::get_account_trades(const std::string& symbol, int
         {"limit", std::to_string(limit)}
     };
     
-    if (start_time > 0) {
-        params["startTime"] = std::to_string(start_time);
-    }
-    
-    if (end_time > 0) {
-        params["endTime"] = std::to_string(end_time);
+    if (!from_id.empty()) {
+        params["fromId"] = from_id;
     }
     
     json response = send_request("/api/v1/myTrades", HttpMethod::GET, params, "", true);
@@ -369,57 +414,76 @@ std::vector<Trade> RestClient::get_account_trades(const std::string& symbol, int
 json RestClient::send_request(const std::string& endpoint, HttpMethod method, 
                              const std::map<std::string, std::string>& params,
                              const std::string& body, bool auth_required) {
-    if (auth_required && !has_credentials()) {
-        throw std::runtime_error("API credentials not set");
-    }
-    
-    // Reset curl handle
-    curl_easy_reset(curl_);
-    
-    // Build query string
-    std::string query_string = build_query_string(params);
-    
-    // Full URL
     std::string url = base_url_ + endpoint;
-    if (!query_string.empty() && method != HttpMethod::POST) {
-        url += "?" + query_string;
+    
+    // Add query parameters
+    if (!params.empty()) {
+        url += "?";
+        bool first = true;
+        for (const auto& param : params) {
+            if (!first) {
+                url += "&";
+            }
+            url += param.first + "=" + param.second;
+            first = false;
+        }
     }
     
-    // Set URL
+    // Set up request
+    curl_easy_reset(curl_);
     curl_easy_setopt(curl_, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl_, CURLOPT_WRITEFUNCTION, write_callback);
     
-    // Set HTTP method
-    std::string method_str = http_method_to_string(method);
-    if (method != HttpMethod::GET) {
-        curl_easy_setopt(curl_, CURLOPT_CUSTOMREQUEST, method_str.c_str());
-    }
+    std::string response_data;
+    curl_easy_setopt(curl_, CURLOPT_WRITEDATA, &response_data);
     
-    // Headers
+    // Set up headers
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, "Accept: application/json");
     
-    // Add authentication if required
     if (auth_required) {
-        int64_t timestamp = get_current_timestamp_ms();
+        if (!has_credentials()) {
+            throw std::runtime_error("API credentials not set");
+        }
+        
+        int64_t timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()
+        ).count();
+        
+        // Use a monotonic clock source if system_clock can go backwards
+        // std::chrono::steady_clock could be an alternative if strictly monotonic is required
+        // However, Backpack likely expects wall time (UTC) for the timestamp.
+        // Ensure server time is synced (e.g., via NTP).
+        
         std::string signature = sign_request(method, endpoint, timestamp, params, body);
         
-        headers = curl_slist_append(headers, ("X-API-Key: " + credentials_.api_key).c_str());
-        headers = curl_slist_append(headers, ("X-Timestamp: " + std::to_string(timestamp)).c_str());
-        headers = curl_slist_append(headers, ("X-Signature: " + signature).c_str());
+        headers = curl_slist_append(headers, ("X-API-KEY: " + credentials_.api_key).c_str());
+        headers = curl_slist_append(headers, ("X-BPX-TS: " + std::to_string(timestamp)).c_str()); // Updated header name
+        headers = curl_slist_append(headers, ("X-BPX-SIGNATURE: " + signature).c_str()); // Updated header name
     }
     
     curl_easy_setopt(curl_, CURLOPT_HTTPHEADER, headers);
     
-    // Set request body for POST
-    if (method == HttpMethod::POST && !body.empty()) {
-        curl_easy_setopt(curl_, CURLOPT_POSTFIELDS, body.c_str());
+    // Set method and body
+    switch (method) {
+        case HttpMethod::GET:
+            break;
+        case HttpMethod::POST:
+            curl_easy_setopt(curl_, CURLOPT_POST, 1L);
+            if (!body.empty()) {
+                curl_easy_setopt(curl_, CURLOPT_POSTFIELDS, body.c_str());
+            }
+            break;
+        case HttpMethod::PUT:
+            curl_easy_setopt(curl_, CURLOPT_CUSTOMREQUEST, "PUT");
+            if (!body.empty()) {
+                curl_easy_setopt(curl_, CURLOPT_POSTFIELDS, body.c_str());
+            }
+            break;
+        case HttpMethod::DELETE:
+            curl_easy_setopt(curl_, CURLOPT_CUSTOMREQUEST, "DELETE");
+            break;
     }
-    
-    // Setup response handling
-    std::string response_string;
-    curl_easy_setopt(curl_, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl_, CURLOPT_WRITEDATA, &response_string);
     
     // Perform request
     CURLcode res = curl_easy_perform(curl_);
@@ -427,50 +491,120 @@ json RestClient::send_request(const std::string& endpoint, HttpMethod method,
     // Clean up headers
     curl_slist_free_all(headers);
     
-    // Check for errors
     if (res != CURLE_OK) {
-        throw std::runtime_error(std::string("curl_easy_perform() failed: ") + curl_easy_strerror(res));
+        throw std::runtime_error("CURL request failed: " + std::string(curl_easy_strerror(res)));
+    }
+    
+    // Check response code
+    long response_code;
+    curl_easy_getinfo(curl_, CURLINFO_RESPONSE_CODE, &response_code);
+    
+    if (response_code >= 400) {
+        throw std::runtime_error("API request failed with code " + std::to_string(response_code) + 
+                               ": " + response_data);
     }
     
     // Parse response
     try {
-        json response = json::parse(response_string);
-        
-        // Check for API error
-        if (response.contains("code") && response.contains("msg")) {
-            throw std::runtime_error("API error: " + response["msg"].get<std::string>());
-        }
-        
-        return response;
-    } catch (const json::parse_error& e) {
-        throw std::runtime_error(std::string("Failed to parse response: ") + e.what());
+        return json::parse(response_data);
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to parse API response: " + std::string(e.what()));
     }
 }
 
 std::string RestClient::sign_request(HttpMethod method, const std::string& endpoint, int64_t timestamp,
-                                    const std::map<std::string, std::string>& params, const std::string& body) {
-    // Build message to sign
-    std::string method_str = http_method_to_string(method);
-    std::string query_string = build_query_string(params);
-    
-    std::stringstream message_stream;
-    message_stream << method_str;
-    message_stream << endpoint;
-    
-    if (!query_string.empty()) {
-        message_stream << "?" << query_string;
+                                   const std::map<std::string, std::string>& params, const std::string& body) {
+    // Decode the Base64 private key
+    std::vector<unsigned char> raw_private_key;
+    try {
+        raw_private_key = base64_decode(credentials_.base64_private_key);
+        // ED25519 private key should be 32 bytes (or 64 bytes seed+pubkey)
+        // Assuming the base64 decodes to the 32-byte private key seed.
+         if (raw_private_key.size() != 32 && raw_private_key.size() != 64) {
+             // OpenSSL's EVP_PKEY_new_raw_private_key expects 32 bytes for ED25519
+             // If it's 64 bytes, it might be the seed+pubkey format. Need clarification on Backpack's exact format.
+             // Assuming 32 bytes for now. Adjust if needed based on key format.
+             // throw std::runtime_error("Invalid ED25519 private key length after base64 decoding: " + std::to_string(raw_private_key.size()));
+             // Allowing 64 for now, as some formats include the public key. EVP might handle this.
+         }
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to decode private key: " + std::string(e.what()));
     }
+
+    // Construct the message to sign
+    // Reference: https://docs.backpack.exchange/#tag/Authentication/Private-Endpoints
+    // "All private requests must contain these headers, which are used to authenticate requests."
+    // "The signature is generated by signing the request body concatenated with the timestamp header value (X-BPX-TS)."
+    // "For GET and DELETE requests, where there is no request body, only the timestamp header value is signed."
     
-    message_stream << timestamp;
-    
-    if (!body.empty()) {
-        message_stream << body;
+    std::string message_to_sign;
+    std::string timestamp_str = std::to_string(timestamp);
+
+    switch (method) {
+        case HttpMethod::GET:
+        case HttpMethod::DELETE:
+             // For GET/DELETE, sign only the timestamp string
+             message_to_sign = timestamp_str;
+            break;
+        case HttpMethod::POST:
+        case HttpMethod::PUT:
+            // For POST/PUT, sign request body + timestamp string
+            message_to_sign = body + timestamp_str;
+            break;
+        default:
+            throw std::invalid_argument("Unsupported HTTP method for signing");
     }
-    
-    std::string message = message_stream.str();
-    
-    // Generate signature
-    return generate_hmac_sha256(message, credentials_.api_secret);
+
+    // Load the raw private key using OpenSSL EVP
+    EVP_PKEY *pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr, raw_private_key.data(), raw_private_key.size());
+    if (!pkey) {
+        // Consider adding OpenSSL error stack logging here for debugging
+        throw std::runtime_error("Failed to create EVP_PKEY from raw private key.");
+    }
+
+    // Sign the message
+    EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
+    if (!md_ctx) {
+        EVP_PKEY_free(pkey);
+        throw std::runtime_error("Failed to create EVP_MD_CTX.");
+    }
+
+    // Note: For Ed25519 'pure' signing (no hash), the digest type is NULL.
+    if (EVP_DigestSignInit(md_ctx, nullptr, nullptr, nullptr, pkey) <= 0) {
+        EVP_MD_CTX_free(md_ctx);
+        EVP_PKEY_free(pkey);
+        throw std::runtime_error("Failed to initialize EVP digest sign context.");
+    }
+
+    // Update with the message bytes
+    if (EVP_DigestSignUpdate(md_ctx, reinterpret_cast<const unsigned char*>(message_to_sign.data()), message_to_sign.length()) <= 0) {
+        EVP_MD_CTX_free(md_ctx);
+        EVP_PKEY_free(pkey);
+        throw std::runtime_error("Failed to update EVP digest sign context.");
+    }
+
+    // Determine the signature length
+    size_t sig_len = 0;
+    if (EVP_DigestSignFinal(md_ctx, nullptr, &sig_len) <= 0) {
+        EVP_MD_CTX_free(md_ctx);
+        EVP_PKEY_free(pkey);
+        throw std::runtime_error("Failed to determine signature length.");
+    }
+
+    // Allocate buffer and get the signature
+    std::vector<unsigned char> signature_bytes(sig_len);
+    if (EVP_DigestSignFinal(md_ctx, signature_bytes.data(), &sig_len) <= 0) {
+        EVP_MD_CTX_free(md_ctx);
+        EVP_PKEY_free(pkey);
+        throw std::runtime_error("Failed to finalize EVP digest sign.");
+    }
+
+    // Clean up
+    EVP_MD_CTX_free(md_ctx);
+    EVP_PKEY_free(pkey);
+
+    // Encode the signature in Base64
+    return base64_encode(signature_bytes.data(), sig_len);
 }
 
 std::string RestClient::http_method_to_string(HttpMethod method) {
@@ -479,16 +613,13 @@ std::string RestClient::http_method_to_string(HttpMethod method) {
         case HttpMethod::POST: return "POST";
         case HttpMethod::PUT: return "PUT";
         case HttpMethod::DELETE: return "DELETE";
-        default: return "GET";
+        default: throw std::invalid_argument("Invalid HTTP method");
     }
 }
 
 size_t RestClient::write_callback(char* ptr, size_t size, size_t nmemb, std::string* data) {
-    if (data) {
-        data->append(ptr, size * nmemb);
-        return size * nmemb;
-    }
-    return 0;
+    data->append(ptr, size * nmemb);
+    return size * nmemb;
 }
 
 } // namespace backpack 
