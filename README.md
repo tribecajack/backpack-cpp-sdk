@@ -1,6 +1,6 @@
 # Backpack C++ SDK
 
-A modern C++ SDK for interacting with the [Backpack Exchange](https://backpack.exchange) WebSocket API. This SDK provides a robust implementation for real-time market data streaming and account management.
+A C++ SDK for interacting with the Backpack Exchange WebSocket API. Provides real-time market data streaming and account management.
 
 ## Features
 
