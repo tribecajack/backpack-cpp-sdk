@@ -77,143 +77,270 @@ static std::string ed25519_sign_b64(const std::string& msg, const std::string& s
     return base64_encode(sig.data(), siglen);
 }
 
-WebSocketClient::WebSocketClient() : m_running(false) {
-    m_ws.setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
-        if (msg->type == ix::WebSocketMessageType::Message) {
-            if (m_message_handler) {
-                m_message_handler(msg->str);
+WebSocketClient::WebSocketClient() 
+    : m_ssl_ctx(ssl::context::tlsv12_client)
+    , m_ws(m_ioc, m_ssl_ctx)
+    , m_resolver(m_ioc)
+    , m_running(false) {
+    
+    // Configure SSL context
+    m_ssl_ctx.set_verify_mode(ssl::verify_peer);
+    m_ssl_ctx.set_default_verify_paths();
+
+    // Set up default handlers
+    m_message_handler = [](const std::string& msg) {
+        std::cout << "Received: " << msg << std::endl;
+    };
+    
+    m_open_handler = []() {
+        std::cout << "WebSocket connected" << std::endl;
+    };
+    
+    m_close_handler = []() {
+        std::cout << "WebSocket disconnected" << std::endl;
+    };
+    
+    m_fail_handler = [](const std::string& error) {
+        std::cerr << "WebSocket error: " << error << std::endl;
+    };
+}
+
+WebSocketClient::~WebSocketClient() {
+    cleanup();
+}
+
+bool WebSocketClient::connect(const std::string& uri) {
+    if (is_connected()) {
+        return true;
+    }
+
+    // Parse the URI
+    std::string host;
+    std::string port = "443";  // Default to HTTPS port
+    std::string target = "/";
+
+    size_t scheme_end = uri.find("://");
+    if (scheme_end != std::string::npos) {
+        size_t host_start = scheme_end + 3;
+        size_t host_end = uri.find(':', host_start);
+        if (host_end == std::string::npos) {
+            host_end = uri.find('/', host_start);
+            if (host_end == std::string::npos) {
+                host = uri.substr(host_start);
+            } else {
+                host = uri.substr(host_start, host_end - host_start);
+                target = uri.substr(host_end);
             }
-        } else if (msg->type == ix::WebSocketMessageType::Error) {
+        } else {
+            host = uri.substr(host_start, host_end - host_start);
+            size_t port_end = uri.find('/', host_end + 1);
+            if (port_end == std::string::npos) {
+                port = uri.substr(host_end + 1);
+            } else {
+                port = uri.substr(host_end + 1, port_end - (host_end + 1));
+                target = uri.substr(port_end);
+            }
+        }
+    }
+
+    try {
+        // Look up the domain name
+        auto const results = m_resolver.resolve(host, port);
+        if (results.empty()) {
+            if (m_fail_handler) m_fail_handler("DNS resolution failed");
+            return false;
+        }
+
+        // Set up the SSL stream
+        if (!SSL_set_tlsext_host_name(m_ws.next_layer().native_handle(), host.c_str())) {
+            if (m_fail_handler) m_fail_handler("SSL hostname setup failed");
+            return false;
+        }
+
+        // Make the connection on the IP address we get from a lookup
+        beast::get_lowest_layer(m_ws).connect(results);
+
+        // Perform the SSL handshake
+        m_ws.next_layer().handshake(ssl::stream_base::client);
+
+        // Set the SNI hostname
+        m_ws.set_option(websocket::stream_base::decorator(
+            [](websocket::request_type& req) {
+                req.set(http::field::user_agent, "Backpack C++ SDK");
+            }));
+
+        // Perform the websocket handshake
+        m_ws.handshake(host, target);
+
+        m_running = true;
+        m_connected = true;
+
+        if (m_open_handler) {
+            m_open_handler();
+        }
+
+        // Start the io_context thread
+        m_thread = std::make_shared<std::thread>([this]() {
+            try {
+                // Start the first async read
+                async_read();
+                
+                // Run the io_context
+                m_ioc.run();
+            } catch (const std::exception& e) {
+                if (m_fail_handler) {
+                    m_fail_handler(std::string("IO context error: ") + e.what());
+                }
+            }
+        });
+
+        // Start the heartbeat thread
+        m_heartbeat_thread = std::make_shared<std::thread>([this]() {
+            try {
+                start_heartbeat();
+            } catch (const std::exception& e) {
+                if (m_fail_handler) {
+                    m_fail_handler(std::string("Heartbeat error: ") + e.what());
+                }
+            }
+        });
+
+        return true;
+    } catch (const std::exception& e) {
+        if (m_fail_handler) {
+            m_fail_handler(std::string("Connection error: ") + e.what());
+        }
+        return false;
+    }
+}
+
+void WebSocketClient::send(const std::string& message) {
+    if (!is_connected()) {
+        throw WebSocketError(WebSocketError::Type::CONNECTION_ERROR, "Not connected");
+    }
+
+    // Post the write operation to the io_context
+    net::post(m_ioc, [this, message]() {
+        try {
+            m_ws.write(net::buffer(message));
+        } catch (const std::exception& e) {
             if (m_fail_handler) {
-                m_fail_handler(msg->errorInfo.reason);
-            }
-        } else if (msg->type == ix::WebSocketMessageType::Open) {
-            if (m_open_handler) {
-                m_open_handler();
-            }
-        } else if (msg->type == ix::WebSocketMessageType::Close) {
-            if (m_close_handler) {
-                m_close_handler();
+                m_fail_handler(std::string("Write error: ") + e.what());
             }
         }
     });
 }
 
-WebSocketClient::~WebSocketClient() {
-    close();
-}
-
-bool WebSocketClient::connect(const std::string& uri, const std::string& api_key, const std::string& api_secret) {
-    if (is_connected()) {
-        throw std::runtime_error("Already connected");
-    }
-
-    m_uri = uri;
-    m_api_key = api_key;
-    m_api_secret = api_secret;
-
-    m_ws.setUrl(uri);
-    m_ws.enableAutomaticReconnection();
-    m_ws.setHandshakeTimeout(CONNECTION_TIMEOUT_MS);
-
-    // Set up authentication headers
-    ix::WebSocketHttpHeaders headers;
-    headers["X-API-Key"] = api_key;
-    std::string signature = ed25519_sign_b64(api_key, api_secret);
-    headers["X-API-Sign"] = signature;
-    m_ws.setExtraHeaders(headers);
-
-    if (!m_ws.connect(CONNECTION_TIMEOUT_MS).success) {
-        throw std::runtime_error("Failed to connect to server");
-    }
-
-    m_running = true;
-    return true;
-}
-
-bool WebSocketClient::send(const std::string& message) {
-    if (!is_connected()) {
-        throw std::runtime_error("Not connected to server");
-    }
-
-    std::lock_guard<std::mutex> lock(m_queue_mutex);
-    if (m_message_queue.size() >= MAX_QUEUE_SIZE) {
-        throw std::runtime_error("Message queue is full");
-    }
-
-    m_message_queue.push(message);
-    return send_with_retry(message, MAX_RETRY_ATTEMPTS);
-}
-
-void WebSocketClient::process_message_queue() {
-    std::lock_guard<std::mutex> lock(m_queue_mutex);
-    while (!m_message_queue.empty()) {
-        auto& message = m_message_queue.front();
+bool WebSocketClient::send_with_retry(const std::string& message, int max_retries) {
+    for (int i = 0; i < max_retries; ++i) {
         try {
-            if (!send_with_retry(message, MAX_RETRY_ATTEMPTS)) {
-                if (m_fail_handler) {
-                    m_fail_handler("Failed to send message after max retries");
-                }
-            }
-        } catch (const std::exception& e) {
-            if (m_fail_handler) {
-                m_fail_handler(e.what());
-            }
-        }
-        m_message_queue.pop();
-    }
-}
-
-bool WebSocketClient::send_with_retry(const std::string& message, int retries) {
-    for (int attempt = 0; attempt < retries; ++attempt) {
-        if (!is_connected() && !reconnect()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100 * (1 << attempt)));
-            continue;
-        }
-
-        if (m_ws.send(message).success) {
+            send(message);
             return true;
+        } catch (const WebSocketError&) {
+            if (i == max_retries - 1) {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100 * (1 << i)));
         }
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(100 * (1 << attempt)));
     }
     return false;
 }
 
-bool WebSocketClient::reconnect() {
-    if (m_uri.empty() || m_api_key.empty() || m_api_secret.empty()) {
-        throw std::runtime_error("Missing connection parameters");
-    }
-
-    close();
-    return connect(m_uri, m_api_key, m_api_secret);
-}
-
-void WebSocketClient::close() {
-    m_running = false;
-    if (is_connected()) {
-        m_ws.close();
-    }
-}
-
 bool WebSocketClient::is_connected() const {
-    return m_ws.getReadyState() == ix::ReadyState::Open;
+    return m_connected;
 }
 
 void WebSocketClient::set_message_handler(std::function<void(const std::string&)> handler) {
-    m_message_handler = handler;
+    m_message_handler = std::move(handler);
 }
 
 void WebSocketClient::set_open_handler(std::function<void()> handler) {
-    m_open_handler = handler;
+    m_open_handler = std::move(handler);
 }
 
 void WebSocketClient::set_close_handler(std::function<void()> handler) {
-    m_close_handler = handler;
+    m_close_handler = std::move(handler);
 }
 
 void WebSocketClient::set_fail_handler(std::function<void(const std::string&)> handler) {
-    m_fail_handler = handler;
+    m_fail_handler = std::move(handler);
+}
+
+void WebSocketClient::async_read() {
+    // Read a message into our buffer
+    m_ws.async_read(
+        m_buffer,
+        [this](beast::error_code ec, std::size_t bytes_transferred) {
+            if (ec) {
+                handle_disconnect();
+                return;
+            }
+
+            // Call the message handler with the received data
+            if (m_message_handler) {
+                m_message_handler(beast::buffers_to_string(m_buffer.data()));
+            }
+
+            // Clear the buffer
+            m_buffer.consume(m_buffer.size());
+
+            // Queue up another read
+            if (m_running) {
+                async_read();
+            }
+        });
+}
+
+void WebSocketClient::handle_disconnect() {
+    m_connected = false;
+    if (m_close_handler) {
+        m_close_handler();
+    }
+}
+
+void WebSocketClient::start_heartbeat() {
+    while (m_running) {
+        if (is_connected()) {
+            try {
+                send("{\"method\":\"PING\"}");
+            } catch (const WebSocketError&) {
+                // Ignore ping errors
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(HEARTBEAT_INTERVAL));
+    }
+}
+
+void WebSocketClient::cleanup() {
+    m_running = false;
+    
+    if (is_connected()) {
+        try {
+            // Post the close operation to the io_context
+            net::post(m_ioc, [this]() {
+                try {
+                    m_ws.close(websocket::close_code::normal);
+                } catch (...) {
+                    // Ignore errors during cleanup
+                }
+            });
+        } catch (...) {
+            // Ignore errors during cleanup
+        }
+    }
+    
+    // Stop the io_context
+    m_ioc.stop();
+    
+    if (m_thread && m_thread->joinable()) {
+        m_thread->join();
+    }
+    
+    if (m_heartbeat_thread && m_heartbeat_thread->joinable()) {
+        m_heartbeat_thread->join();
+    }
+    
+    m_connected = false;
 }
 
 } // namespace backpack

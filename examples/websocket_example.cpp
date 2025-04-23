@@ -6,6 +6,7 @@
 #include <csignal>
 #include <atomic>
 #include <backpack/websocket_client.hpp>
+#include <backpack/types.hpp>
 
 // Global flag for graceful shutdown
 std::atomic<bool> running(true);
@@ -69,13 +70,16 @@ int main(int argc, char* argv[]) {
         std::cout << "Subscribing to public channels..." << std::endl;
         
         // Subscribe to ticker
-        client.send("{\"method\":\"SUBSCRIBE\",\"params\":[\"ticker." + symbol + "\"]}");
+        backpack::SubscriptionRequest ticker_req{backpack::Channel::TICKER, symbol};
+        client.send(ticker_req.to_json().dump());
         
         // Subscribe to trades
-        client.send("{\"method\":\"SUBSCRIBE\",\"params\":[\"trades." + symbol + "\"]}");
+        backpack::SubscriptionRequest trades_req{backpack::Channel::TRADES, symbol};
+        client.send(trades_req.to_json().dump());
         
         // Subscribe to order book updates
-        client.send("{\"method\":\"SUBSCRIBE\",\"params\":[\"depth." + symbol + "\"]}");
+        backpack::SubscriptionRequest depth_req{backpack::Channel::DEPTH, symbol};
+        client.send(depth_req.to_json().dump());
         
         // Main loop - keep program running until signal is received
         std::cout << "WebSocket client running. Press Ctrl+C to exit." << std::endl;
