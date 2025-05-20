@@ -376,27 +376,83 @@ struct Order {
     
     static Order from_json(const json& j) {
         Order order;
-        order.id = j.at("orderId");
+        // Map long and short field names for WebSocket payloads
+        if (j.contains("orderId")) order.id = j.at("orderId").get<std::string>();
+        else if (j.contains("i")) order.id = j.at("i").get<std::string>();
+        else order.id = "";
+
         order.client_order_id = j.value("clientOrderId", "");
-        order.symbol = j.at("symbol");
-        
-        auto side_str = j.at("side").get<std::string>();
-        auto side_opt = string_to_order_side(side_str);
-        order.side = side_opt.value_or(OrderSide::BUY);
-        
-        auto type_str = j.at("type").get<std::string>();
-        auto type_opt = string_to_order_type(type_str);
-        order.type = type_opt.value_or(OrderType::LIMIT);
-        
-        order.price = std::stod(j.at("price").get<std::string>());
-        order.quantity = std::stod(j.at("quantity").get<std::string>());
-        order.executed_quantity = std::stod(j.at("executedQty").get<std::string>());
-        
-        auto status_str = j.at("status").get<std::string>();
-        auto status_opt = string_to_order_status(status_str);
-        order.status = status_opt.value_or(OrderStatus::NEW);
-        
-        order.timestamp = j.at("timestamp");
+
+        if (j.contains("symbol")) order.symbol = j.at("symbol").get<std::string>();
+        else if (j.contains("s")) order.symbol = j.at("s").get<std::string>();
+        else order.symbol = "";
+
+        std::string side_str;
+        if (j.contains("side")) side_str = j.at("side").get<std::string>();
+        else if (j.contains("S")) side_str = j.at("S").get<std::string>();
+        else side_str = "";
+        order.side = string_to_order_side(side_str).value_or(OrderSide::BUY);
+
+        std::string type_str;
+        if (j.contains("type")) type_str = j.at("type").get<std::string>();
+        else if (j.contains("o")) type_str = j.at("o").get<std::string>();
+        else type_str = "";
+        order.type = string_to_order_type(type_str).value_or(OrderType::LIMIT);
+
+        // Robust parsing for price, quantity, executed_quantity
+        auto get_json_field_as_double = [](const json& current_json, const std::string& long_key, const std::string& short_key, double default_val) {
+            const json* field_ptr = nullptr;
+            if (current_json.contains(long_key)) {
+                field_ptr = &current_json.at(long_key);
+            } else if (current_json.contains(short_key)) {
+                field_ptr = &current_json.at(short_key);
+            }
+
+            if (field_ptr) {
+                if (field_ptr->is_number()) {
+                    return field_ptr->get<double>();
+                } else if (field_ptr->is_string()) {
+                    try {
+                        return std::stod(field_ptr->get<std::string>());
+                    } catch (const std::exception& e) {
+                        // Optionally log parsing error for string to double
+                        // spdlog::warn("Failed to convert string '{}' to double for key '{}': {}", field_ptr->get<std::string>(), short_key, e.what());
+                        return default_val;
+                    }
+                } else if (field_ptr->is_null()) {
+                    return default_val;
+                }
+                // Optionally log unexpected type
+                // spdlog::warn("Unexpected type for key '{}': {}", short_key, field_ptr->type_name());
+            }
+            return default_val;
+        };
+
+        order.price = get_json_field_as_double(j, "price", "p", 0.0);
+        order.quantity = get_json_field_as_double(j, "quantity", "q", 0.0);
+        // Assuming order.executed_quantity refers to base quantity (short key "z" or long key "executedQty")
+        // "Q" is executedQuoteQty, which might be different.
+        order.executed_quantity = get_json_field_as_double(j, "executedQty", "z", 0.0);
+
+        std::string status_str;
+        if (j.contains("status")) status_str = j.at("status").get<std::string>();
+        else if (j.contains("X")) status_str = j.at("X").get<std::string>(); // Check for "X" (used in payload)
+        else if (j.contains("x")) status_str = j.at("x").get<std::string>(); // Then "x"
+        else status_str = "";
+        order.status = string_to_order_status(status_str).value_or(OrderStatus::NEW);
+
+        if (j.contains("timestamp")) order.timestamp = j.at("timestamp").get<std::string>(); // Prefer long key if present and string
+        else if (j.contains("T")) { // Short key "T" is numeric
+            if (j.at("T").is_number()) {
+                order.timestamp = std::to_string(j.at("T").get<std::uint64_t>());
+            } else if (j.at("T").is_string()) { // Defensive: if T ever comes as string
+                 order.timestamp = j.at("T").get<std::string>();
+            } else {
+                order.timestamp = ""; // Or handle error
+            }
+        } else {
+            order.timestamp = "";
+        }
         return order;
     }
 };
